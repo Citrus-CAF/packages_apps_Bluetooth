@@ -145,7 +145,8 @@ public class A2dpService extends ProfileService {
     protected boolean start() {
         Log.i(TAG, "start()");
         if (sA2dpService != null) {
-            throw new IllegalStateException("start() called twice");
+            Log.w(TAG, "A2dpService is already running");
+            return true;
         }
 
         // Step 1: Get BluetoothAdapter, AdapterService, A2dpNativeInterface, AudioManager.
@@ -242,6 +243,8 @@ public class A2dpService extends ProfileService {
         if (mActiveDevice != null && AvrcpTargetService.get() != null) {
             AvrcpTargetService.get().storeVolumeForDevice(mActiveDevice);
         }
+        if (mActiveDevice != null && mAvrcp_ext != null)
+            mAvrcp_ext.storeVolumeForAllDevice(mActiveDevice);
 
         // Step 9: Clear active device and stop playing audio
         removeActiveDevice(true);
@@ -442,6 +445,10 @@ public class A2dpService extends ProfileService {
             } else if(mAdapterService.getTwsPlusPeerAddress(mConnDev).equals(device.getAddress())) {
                 Log.d(TAG,"isConnectionAllowed: Peer earbud pair allow connection");
                 return true;
+            } else {
+                Log.d(TAG,"isConnectionAllowed: Unpaired earbud, disconnect previous TWS+ device");
+                disconnectExisting = true;
+                return false;
             }
         } else if (tws_connected && !mAdapterService.isTwsPlusDevice(device)) {
             Log.d(TAG,"isConnectionAllowed: Disconnect tws device to connect to legacy headset");
@@ -667,8 +674,7 @@ public class A2dpService extends ProfileService {
 
         if (previousActiveDevice != null && AvrcpTargetService.get() != null) {
             AvrcpTargetService.get().storeVolumeForDevice(previousActiveDevice);
-        } else if (previousActiveDevice != null && mAvrcp_ext != null &&
-                   getConnectionState(previousActiveDevice) == BluetoothProfile.STATE_CONNECTED) {
+        } else if (previousActiveDevice != null && mAvrcp_ext != null) {
             //Store volume only if SHO is triggered or output device other than BT is selected
             mAvrcp_ext.storeVolumeForDevice(previousActiveDevice);
         }
@@ -748,7 +754,8 @@ public class A2dpService extends ProfileService {
             if (previousActiveDevice != null) {
                 if (!mAudioManager.isStreamMute(AudioManager.STREAM_MUSIC)) {
                    mAudioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC,
-                                                 AudioManager.ADJUST_MUTE, 0);
+                                                 AudioManager.ADJUST_MUTE,
+                                                 mAudioManager.FLAG_BLUETOOTH_ABS_VOLUME);
                    wasMuted = true;
                 }
                 if (mDummyDevice != null &&
