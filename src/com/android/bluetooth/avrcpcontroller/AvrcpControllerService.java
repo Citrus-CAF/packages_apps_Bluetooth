@@ -28,7 +28,6 @@ import android.media.browse.MediaBrowser;
 import android.media.browse.MediaBrowser.MediaItem;
 import android.media.session.PlaybackState;
 import android.os.Bundle;
-import android.os.HandlerThread;
 import android.os.Message;
 import android.os.SystemProperties;
 import android.util.Log;
@@ -48,6 +47,9 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
+import android.content.res.Resources;
+import android.content.res.Resources.NotFoundException;
+
 /**
  * Provides Bluetooth AVRCP Controller profile, as a service in the Bluetooth application.
  */
@@ -55,7 +57,7 @@ public class AvrcpControllerService extends ProfileService {
     static final String TAG = "AvrcpControllerService";
     static final String LOG_TAG = "AvrcpController";
     static final boolean DBG = true;
-    static final boolean VDBG = Log.isLoggable(LOG_TAG, Log.VERBOSE);
+    static final boolean VDBG = true;
     /*
      *  Play State Values from JNI
      */
@@ -227,8 +229,7 @@ public class AvrcpControllerService extends ProfileService {
 
     @Override
     protected boolean start() {
-        HandlerThread thread = new HandlerThread("BluetoothAvrcpHandler");
-        thread.start();
+        Log.d(TAG, "start()");
 
         mAdapterService = Objects.requireNonNull(AdapterService.getAdapterService(),
                                 "AdapterService cansinkstatenot be null when A2dpService starts");
@@ -712,8 +713,11 @@ public class AvrcpControllerService extends ProfileService {
                 return null;
             }
             avrcpCtSm = new AvrcpControllerStateMachine(sAvrcpControllerService, device);
+            Log.d(TAG, "AvrcpcontrollerSM start() called: " + device);
             avrcpCtSm.start();
+            Log.d(TAG, "AvrcpcontrollerSM started for device: " + device);
             mStateMachines.put(device, avrcpCtSm);
+            avrcpCtSm.registerReceiver(sAvrcpControllerService, device);
         }
         return avrcpCtSm;
     }
@@ -871,6 +875,7 @@ public class AvrcpControllerService extends ProfileService {
 
         AvrcpControllerStateMachine mAvrcpCtSm = getOrCreateAvrcpCtStateMachine(device);
         if (mAvrcpCtSm == null) {
+            Log.e(TAG, "onConnectionStateChanged: mAvrcpCtSm is null, return");
             return;
         }
 
@@ -903,11 +908,18 @@ public class AvrcpControllerService extends ProfileService {
         Log.i(TAG, " getRcFeatures caPsm :" + caPsm);
         BluetoothDevice device = BluetoothAdapter.getDefaultAdapter().getRemoteDevice(address);
         AvrcpControllerStateMachine mAvrcpCtSm = getAvrcpCtStateMachine(device);
-        if (mAvrcpCtSm == null)
+        if (mAvrcpCtSm == null) {
+            Log.i(TAG, "getRcFeatures: mAvrcpCtSm is null for device: " + device);
             return;
-        Message msg = mAvrcpCtSm.obtainMessage(
-            AvrcpControllerStateMachine.MESSAGE_PROCESS_RC_FEATURES, features, caPsm, device);
-        mAvrcpCtSm.sendMessage(msg);
+        }
+        try {
+            Message msg = mAvrcpCtSm.obtainMessage(
+               AvrcpControllerStateMachine.MESSAGE_PROCESS_RC_FEATURES, features, caPsm, device);
+            mAvrcpCtSm.sendMessage(msg);
+        } catch(Exception ee) {
+            Log.i(TAG, "getRcFeatures exception occured.");
+            ee.printStackTrace();
+        }
     }
 
     // Called by JNI

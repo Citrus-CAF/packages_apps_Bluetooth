@@ -18,6 +18,7 @@ package com.android.bluetooth.a2dp;
 
 import android.bluetooth.BluetoothA2dp;
 import android.bluetooth.BluetoothAdapter;
+import com.android.bluetooth.a2dpsink.A2dpSinkService;
 import android.bluetooth.BluetoothCodecConfig;
 import android.bluetooth.BluetoothCodecStatus;
 import android.bluetooth.BluetoothDevice;
@@ -65,6 +66,8 @@ public class A2dpService extends ProfileService {
     private static final String TAG = "A2dpService";
 
     private static A2dpService sA2dpService;
+    private static A2dpSinkService sA2dpSinkService;
+    private static boolean mA2dpSrcSnkConcurrency;
 
     private BluetoothAdapter mAdapter;
     private AdapterService mAdapterService;
@@ -211,6 +214,11 @@ public class A2dpService extends ProfileService {
         if (DBG) {
             Log.d(TAG, "A2DP offload flag set to " + mA2dpOffloadEnabled);
         }
+        mA2dpSrcSnkConcurrency= SystemProperties.getBoolean(
+                                "persist.vendor.service.bt.a2dp_concurrency", false);
+        if (DBG) {
+            Log.d(TAG, "A2DP concurrency set to " + mA2dpSrcSnkConcurrency);
+        }
 
         // Step 8: Setup broadcast receivers
         IntentFilter filter = new IntentFilter();
@@ -244,7 +252,7 @@ public class A2dpService extends ProfileService {
             AvrcpTargetService.get().storeVolumeForDevice(mActiveDevice);
         }
         if (mActiveDevice != null && mAvrcp_ext != null)
-            mAvrcp_ext.storeVolumeForAllDevice(mActiveDevice);
+            mAvrcp_ext.storeVolumeForDevice(mActiveDevice);
 
         // Step 9: Clear active device and stop playing audio
         removeActiveDevice(true);
@@ -372,12 +380,21 @@ public class A2dpService extends ProfileService {
                 Log.e(TAG, "Cannot connect to " + device + " : no state machine");
                 return false;
             }
+            if (mA2dpSrcSnkConcurrency) {
+                sA2dpSinkService = A2dpSinkService.getA2dpSinkService();
+                List<BluetoothDevice> srcDevs = sA2dpSinkService.getConnectedDevices();
+                for ( BluetoothDevice src : srcDevs ) {
+                    Log.d(TAG, "calling sink disconnect to " + src);
+                    sA2dpSinkService.disconnect(src);
+                }
+            }
+
             smConnect.sendMessage(A2dpStateMachine.CONNECT);
             return true;
         }
     }
 
-    boolean disconnect(BluetoothDevice device) {
+    public boolean disconnect(BluetoothDevice device) {
         enforceCallingOrSelfPermission(BLUETOOTH_ADMIN_PERM, "Need BLUETOOTH ADMIN permission");
         if (DBG) {
             Log.d(TAG, "disconnect(): " + device);
@@ -416,7 +433,9 @@ public class A2dpService extends ProfileService {
 
         List <BluetoothDevice> connectingConnectedDevices =
                   getDevicesMatchingConnectionStates(CONNECTING_CONNECTED_STATES);
-        BluetoothDevice mConnDev = connectingConnectedDevices.get(0);
+        BluetoothDevice mConnDev = null;
+        if(!connectingConnectedDevices.isEmpty())
+            mConnDev = connectingConnectedDevices.get(0);
         if (mA2dpStackEvent == A2dpStackEvent.CONNECTION_STATE_CONNECTING ||
             mA2dpStackEvent == A2dpStackEvent.CONNECTION_STATE_CONNECTED) {
             if ((!mAdapterService.isTwsPlusDevice(device) && tws_connected) ||
@@ -442,7 +461,7 @@ public class A2dpService extends ProfileService {
             if (num_connected > 1) {
                 Log.d(TAG,"isConnectionAllowed: Max TWS connected, disconnect first");
                 return false;
-            } else if(mAdapterService.getTwsPlusPeerAddress(mConnDev).equals(device.getAddress())) {
+            } else if(mConnDev != null && mAdapterService.getTwsPlusPeerAddress(mConnDev).equals(device.getAddress())) {
                 Log.d(TAG,"isConnectionAllowed: Peer earbud pair allow connection");
                 return true;
             } else {
@@ -603,7 +622,7 @@ public class A2dpService extends ProfileService {
 
     private void removeActiveDevice(boolean forceStopPlayingAudio) {
         BluetoothDevice previousActiveDevice = mActiveDevice;
-        synchronized (mStateMachines) {
+        synchronized (mBtA2dpLock) {
             // Clear the active device
             mActiveDevice = null;
             // This needs to happen before we inform the audio manager that the device
@@ -810,7 +829,8 @@ public class A2dpService extends ProfileService {
             }
             if (wasMuted) {
                mAudioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC,
-                                          AudioManager.ADJUST_UNMUTE, 0);
+                                          AudioManager.ADJUST_UNMUTE,
+                                          mAudioManager.FLAG_BLUETOOTH_ABS_VOLUME);
             }
             if(mAvrcp_ext != null)
                 mAvrcp_ext.setAbsVolumeFlag(device);
@@ -1126,6 +1146,16 @@ public class A2dpService extends ProfileService {
                 Log.e(TAG, "Cannot process stack event: no state machine: " + stackEvent);
                 return;
             }
+            if (mA2dpSrcSnkConcurrency &&
+                ( A2dpStackEvent.CONNECTION_STATE_CONNECTING == stackEvent.valueInt ||
+                  A2dpStackEvent.CONNECTION_STATE_CONNECTED == stackEvent.valueInt )) {
+                sA2dpSinkService = A2dpSinkService.getA2dpSinkService();
+                List<BluetoothDevice> srcDevs = sA2dpSinkService.getConnectedDevices();
+                for ( BluetoothDevice src : srcDevs ) {
+                    Log.d(TAG, "calling sink disconnect to " + src);
+                    sA2dpSinkService.disconnect(src);
+                }
+            }
             sm.sendMessage(A2dpStateMachine.STACK_EVENT, stackEvent);
         }
     }
@@ -1307,7 +1337,7 @@ public class A2dpService extends ProfileService {
         }
     }
 
-    private void updateOptionalCodecsSupport(BluetoothDevice device) {
+    public void updateOptionalCodecsSupport(BluetoothDevice device) {
         int previousSupport = getSupportsOptionalCodecs(device);
         boolean supportsOptional = false;
 
